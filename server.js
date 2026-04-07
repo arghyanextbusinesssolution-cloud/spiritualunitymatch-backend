@@ -24,7 +24,7 @@ const httpServer = createServer(app);
 // Initialize Socket.IO
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL,
+    origin: process.env.FRONTEND_URL ? process.env.FRONTEND_URL.replace(/\/$/, '') : '*',
     credentials: true,
     methods: ['GET', 'POST']
   }
@@ -37,23 +37,27 @@ app.set('io', io);
 // CORS configuration - allow multiple origins for production
 const allowedOrigins = [
   process.env.FRONTEND_URL,
-  'http://localhost:3000'
-].filter(Boolean); // Remove any undefined values
+  'http://localhost:3000',
+  'https://spiritualunitymatch.com'
+].filter(Boolean).map(origin => origin.replace(/\/$/, ''));
 
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, Postman, or curl)
     if (!origin) return callback(null, true);
 
+    const normalizedOrigin = origin.replace(/\/$/, '');
+    
     // Check if origin is in allowed list
-    if (allowedOrigins.indexOf(origin) !== -1 || process.env.NODE_ENV === 'development') {
+    if (allowedOrigins.includes(normalizedOrigin) || process.env.NODE_ENV === 'development') {
       callback(null, true);
     } else {
       // In production, be more strict - allow known origins only
       // But also allow Render preview URLs
-      if (origin.includes('.onrender.com') || allowedOrigins.some(allowed => origin.startsWith(allowed))) {
+      if (normalizedOrigin.includes('.onrender.com')) {
         callback(null, true);
       } else {
+        console.warn(`⚠️ [CORS] Origin rejected: ${origin}`);
         callback(new Error('Not allowed by CORS'));
       }
     }
