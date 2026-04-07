@@ -8,6 +8,21 @@ import { dirname, join } from 'path';
 import { createServer } from 'http';
 import { Server } from 'socket.io';
 
+// Import Routes
+import authRoutes from './routes/auth.js';
+import profileRoutes from './routes/profiles.js';
+import subscriptionRoutes from './routes/subscriptions.js';
+import matchRoutes from './routes/matches.js';
+import messageRoutes from './routes/messages.js';
+import adminRoutes from './routes/admin.js';
+import spiritualRoutes from './routes/spiritual.js';
+import communityRoutes from './routes/community.js';
+import soulRoutes from './routes/soul.js';
+import eventsRoutes from './routes/events.js';
+
+// Import Services
+import { initializeSocket } from './services/socketService.js';
+
 // Load environment variables
 dotenv.config();
 
@@ -15,7 +30,7 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const app = express();
-// Render uses PORT environment variable, default to 5000 for local development
+// Render/Hostinger uses PORT environment variable, default to 5000 for local development
 const PORT = process.env.PORT || 5000;
 
 // Create HTTP server
@@ -41,6 +56,8 @@ const allowedOrigins = [
   'https://spiritualunitymatch.com'
 ].filter(Boolean).map(origin => origin.replace(/\/$/, ''));
 
+console.log('🌐 [CORS] Allowed Origins:', allowedOrigins);
+
 app.use(cors({
   origin: function (origin, callback) {
     // Allow requests with no origin (like mobile apps, Postman, or curl)
@@ -53,7 +70,6 @@ app.use(cors({
       callback(null, true);
     } else {
       // In production, be more strict - allow known origins only
-      // But also allow Render preview URLs
       if (normalizedOrigin.includes('.onrender.com')) {
         callback(null, true);
       } else {
@@ -76,30 +92,21 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // MongoDB Connection
-// Using the provided connection string
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://arghyanextbusinesssolution_db_user:HIoHvpDclQ9ei0NO@cluster0.ulsxizj.mongodb.net/?appName=Cluster0';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://arghyanextbusinesssolution_db_user:HIoHvpDclQ9ei0NO@cluster0.ulsxizj.mongodb.net/dating-website?appName=Cluster0';
 
+console.log('🔌 [DB] Connecting to MongoDB...');
 mongoose.connect(MONGODB_URI)
   .then(() => {
     console.log('✅ MongoDB connected successfully');
   })
   .catch((error) => {
-    console.error('❌ MongoDB connection error:', error);
-    process.exit(1);
+    console.error('❌ MongoDB connection error:', error.message);
+    // Log the error but don't exit the process immediately in production
+    // This allows the health check to still be accessible
+    console.warn('⚠️ Server running without database connection functionality');
   });
 
 // Routes
-import authRoutes from './routes/auth.js';
-import profileRoutes from './routes/profiles.js';
-import subscriptionRoutes from './routes/subscriptions.js';
-import matchRoutes from './routes/matches.js';
-import messageRoutes from './routes/messages.js';
-import adminRoutes from './routes/admin.js';
-import spiritualRoutes from './routes/spiritual.js';
-import communityRoutes from './routes/community.js';
-import soulRoutes from './routes/soul.js';
-import eventsRoutes from './routes/events.js';
-
 app.use('/api/auth', authRoutes);
 app.use('/api/profiles', profileRoutes);
 app.use('/api/subscriptions', subscriptionRoutes);
@@ -117,21 +124,24 @@ app.get('/', (req, res) => {
     success: true,
     message: 'Spiritual Unity Match API',
     version: '1.0.0',
+    status: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    env: process.env.NODE_ENV || 'production',
     endpoints: {
       health: '/api/health',
       auth: '/api/auth',
-      profiles: '/api/profiles',
-      matches: '/api/matches',
-      messages: '/api/messages',
-      subscriptions: '/api/subscriptions',
-      soul: '/api/soul'
+      profiles: '/api/profiles'
     }
   });
 });
 
 // Health check
 app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', message: 'Spiritual Unity Match API is running' });
+  res.json({ 
+    status: 'ok', 
+    message: 'Spiritual Unity Match API is running',
+    database: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
+    timestamp: new Date().toISOString()
+  });
 });
 
 // Error handling middleware
@@ -153,13 +163,12 @@ app.use((req, res) => {
 });
 
 // Initialize Socket.IO service
-import { initializeSocket } from './services/socketService.js';
 initializeSocket(io);
 
 // Start server
 httpServer.listen(PORT, () => {
   console.log(`🚀 Spiritual Unity Match API running on port ${PORT}`);
   console.log(`🔌 Socket.IO ready for real-time messaging`);
-  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'development'}`);
+  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'production'}`);
+  console.log(`🌐 API URL: https://backend.spiritualunitymatch.com`);
 });
-
