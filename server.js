@@ -33,13 +33,20 @@ const app = express();
 // Render/Hostinger uses PORT environment variable, default to 5000 for local development
 const PORT = process.env.PORT || 5000;
 
+// CORS origins defined early for use in Socket.IO and middleware
+const allowedOrigins = [
+  'https://spiritualunitymatch.com',
+  'https://www.spiritualunitymatch.com',
+  'http://localhost:3000'
+].filter(Boolean);
+
 // Create HTTP server
 const httpServer = createServer(app);
 
 // Initialize Socket.IO
 const io = new Server(httpServer, {
   cors: {
-    origin: process.env.FRONTEND_URL ? process.env.FRONTEND_URL.replace(/\/$/, '') : '*',
+    origin: allowedOrigins,
     credentials: true,
     methods: ['GET', 'POST']
   }
@@ -48,15 +55,9 @@ const io = new Server(httpServer, {
 // Make io available globally for use in routes
 app.set('io', io);
 
+
 // Middleware
 // CORS configuration - allow multiple origins for production
-const allowedOrigins = [
-  process.env.FRONTEND_URL,
-  'http://localhost:3000',
-  'https://spiritualunitymatch.com',
-  'https://www.spiritualunitymatch.com'
-].filter(Boolean).map(origin => origin.replace(/\/$/, ''));
-
 console.log('🌐 [CORS] Allowed Origins:', allowedOrigins);
 
 app.use(cors({
@@ -65,9 +66,7 @@ app.use(cors({
 
     if (!origin) return callback(null, true);
 
-    const normalizedOrigin = origin.replace(/\/$/, '');
-
-    if (allowedOrigins.includes(normalizedOrigin) || process.env.NODE_ENV === 'development') {
+    if (allowedOrigins.includes(origin) || process.env.NODE_ENV === 'development') {
       return callback(null, true);
     }
 
