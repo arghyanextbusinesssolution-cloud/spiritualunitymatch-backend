@@ -53,35 +53,34 @@ app.set('io', io);
 const allowedOrigins = [
   process.env.FRONTEND_URL,
   'http://localhost:3000',
-  'https://spiritualunitymatch.com'
+  'https://spiritualunitymatch.com',
+  'https://www.spiritualunitymatch.com'
 ].filter(Boolean).map(origin => origin.replace(/\/$/, ''));
 
 console.log('🌐 [CORS] Allowed Origins:', allowedOrigins);
 
 app.use(cors({
   origin: function (origin, callback) {
-    // Allow requests with no origin (like mobile apps, Postman, or curl)
+    console.log('🌍 Incoming Origin:', origin);
+
     if (!origin) return callback(null, true);
 
     const normalizedOrigin = origin.replace(/\/$/, '');
-    
-    // Check if origin is in allowed list
+
     if (allowedOrigins.includes(normalizedOrigin) || process.env.NODE_ENV === 'development') {
-      callback(null, true);
-    } else {
-      // In production, be more strict - allow known origins only
-      if (normalizedOrigin.includes('.onrender.com')) {
-        callback(null, true);
-      } else {
-        console.warn(`⚠️ [CORS] Origin rejected: ${origin}`);
-        callback(new Error('Not allowed by CORS'));
-      }
+      return callback(null, true);
     }
+
+    console.warn(`❌ Rejected Origin: ${origin}`);
+    return callback(null, false); // ⚠️ IMPORTANT: don't throw error
   },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS', 'PATCH'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With']
 }));
+
+// Explicitly handle preflight requests
+app.options('*', cors());
 
 // Stripe webhook needs raw body for signature verification
 // Register webhook route BEFORE express.json() middleware
