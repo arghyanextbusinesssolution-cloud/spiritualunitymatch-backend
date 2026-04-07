@@ -116,20 +116,9 @@ app.use('/api/community', communityRoutes);
 app.use('/api/soul', soulRoutes);
 app.use('/api/events', eventsRoutes);
 
-// Root route
+// Root route for connection testing
 app.get('/', (req, res) => {
-  res.json({
-    success: true,
-    message: 'Spiritual Unity Match API',
-    version: '1.0.0',
-    status: mongoose.connection.readyState === 1 ? 'connected' : 'disconnected',
-    env: process.env.NODE_ENV || 'production',
-    endpoints: {
-      health: '/api/health',
-      auth: '/api/auth',
-      profiles: '/api/profiles'
-    }
-  });
+  res.send('<h1>✅ Spiritual Unity Match Backend is Running!</h1><p>Visit <a href="/api/health">/api/health</a> for full status.</p>');
 });
 
 // Health check
