@@ -21,7 +21,7 @@ export async function sendRegistrationEmail(toEmail, event, icsContent, action =
       : `You've successfully registered for ${event.title} on ${new Date(event.startDate).toLocaleString()}`;
 
     const mailOptions = {
-      from: process.env.FROM_EMAIL || 'no-reply@spiritualunitymatch.com',
+      from: process.env.FROM_EMAIL,
       to: toEmail,
       subject,
       text,

@@ -1,0 +1,17 @@
+# Hostinger Node.js .htaccess configuration
+# This ensures that requests are passed to the Node.js process 
+# if the environment is using Phusion Passenger (common in shared hosting).
+
+<IfModule mod_passenger.c>
+    PassengerAppRoot /home/u123456789/public_html/backend
+    PassengerBaseURI /
+    PassengerNodejs /usr/bin/node
+    PassengerAppType node
+    PassengerStartupFile index.js
+</IfModule>
+
+# Basic rewrite rules to ensure health check and API are reachable
+RewriteEngine On
+RewriteCond %{REQUEST_FILENAME} !-f
+RewriteCond %{REQUEST_FILENAME} !-d
+RewriteRule ^(.*)$ index.js [L]

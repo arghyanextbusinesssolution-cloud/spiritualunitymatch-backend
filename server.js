@@ -33,12 +33,16 @@ const app = express();
 // Render/Hostinger uses PORT environment variable, default to 5000 for local development
 const PORT = process.env.PORT || 5000;
 
-// CORS origins defined early for use in Socket.IO and middleware
+// CORS origins defined from environment variables
+const envOrigins = process.env.ALLOWED_ORIGINS ? process.env.ALLOWED_ORIGINS.split(',') : [];
+const frontendUrl = process.env.FRONTEND_URL;
 const allowedOrigins = [
-  'https://spiritualunitymatch.com',
+  ...envOrigins,
+  frontendUrl,
+  'https://spiritualunitymatch.com', // Keep placeholders if they are standard
   'https://www.spiritualunitymatch.com',
   'http://localhost:3000'
-].filter(Boolean);
+].filter(Boolean).filter((item, index, self) => self.indexOf(item) === index);
 
 // Create HTTP server
 const httpServer = createServer(app);
@@ -89,19 +93,17 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
-// MongoDB Connection
+// MongoDB Connection with improved error handling
 const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://arghyanextbusinesssolution_db_user:HIoHvpDclQ9ei0NO@cluster0.ulsxizj.mongodb.net/dating-website?appName=Cluster0';
 
-console.log('🔌 [DB] Connecting to MongoDB...');
+console.log('🔌 [DB] Attempting connection to MongoDB...');
 mongoose.connect(MONGODB_URI)
   .then(() => {
-    console.log('✅ MongoDB connected successfully');
+    console.log('✅ [DB] MongoDB connected successfully');
   })
   .catch((error) => {
-    console.error('❌ MongoDB connection error:', error.message);
-    // Log the error but don't exit the process immediately in production
-    // This allows the health check to still be accessible
-    console.warn('⚠️ Server running without database connection functionality');
+    console.error('❌ [DB] MongoDB connection error:', error.message);
+    console.warn('⚠️ [DB] Server running without database functionality');
   });
 
 // Routes
@@ -152,10 +154,19 @@ app.use((req, res) => {
 // Initialize Socket.IO service
 initializeSocket(io);
 
-// Start server
-httpServer.listen(PORT, () => {
-  console.log(`🚀 Spiritual Unity Match API running on port ${PORT}`);
-  console.log(`🔌 Socket.IO ready for real-time messaging`);
-  console.log(`🌐 Environment: ${process.env.NODE_ENV || 'production'}`);
-  console.log(`🌐 API URL: https://backend.spiritualunitymatch.com`);
+// Start server with explicit interface binding for cloud hosting
+const server = httpServer.listen(PORT, '0.0.0.0', () => {
+  console.log(`🚀 [Server] Spiritual Unity Match API running on port ${PORT}`);
+  console.log(`🔌 [Server] Interface binding: 0.0.0.0`);
+  console.log(`🌐 [Server] Environment: ${process.env.NODE_ENV || 'production'}`);
+  console.log(`✅ [Server] API ready for requests`);
+});
+
+// Handle server errors (e.g., EADDRINUSE)
+server.on('error', (err) => {
+  console.error('❌ [Server] Startup error:', err);
+  if (err.code === 'EADDRINUSE') {
+    console.error(`❌ [Server] Port ${PORT} is already in use.`);
+  }
+  process.exit(1);
 });
