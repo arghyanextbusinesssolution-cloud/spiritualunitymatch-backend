@@ -18,45 +18,101 @@ export const getSuggestedMatches = async (req, res) => {
     try {
         const userId = req.user._id;
         const userIdStr = userId.toString();
-        const { limit = 20 } = req.query;
+        const { 
+            limit = 20,
+            minAge,
+            maxAge,
+            maxDistance,
+            spiritualInterests, // comma-separated string
+            sortByDistance
+        } = req.query;
 
-        // 1. Check match cache first
-        let cachedMatches = await getCachedMatches(userIdStr);
+        const hasFilters = minAge || maxAge || maxDistance || spiritualInterests || sortByDistance;
+
+        // 1. Check match cache first (skip cache if filters active)
+        let cachedMatches = !hasFilters ? await getCachedMatches(userIdStr) : null;
+
+        let allMatches = [];
 
         if (cachedMatches && cachedMatches.length > 0) {
             console.log(`✅ [BACKEND] CACHE HIT: Found ${cachedMatches.length} suggested matches for user ${userIdStr}`);
-            return res.json({
-                success: true,
-                matches: cachedMatches.slice(0, parseInt(limit))
+            allMatches = cachedMatches;
+        } else {
+            // 2. Cache Miss: Generate instantly
+            console.log(`⚠️ [BACKEND] CACHE MISS: Generating matches on-the-fly for user ${userIdStr}`);
+            const generatedMatches = await generateMatchesForUser(userIdStr, 100);
+
+            if (generatedMatches.length > 0) {
+                if (!hasFilters) {
+                    cacheMatches(userIdStr, generatedMatches).catch(err => console.error("Cache save error:", err));
+                }
+                allMatches = generatedMatches.map(m => {
+                    const { populatedProfile, ...clientMatch } = m;
+                    return { ...clientMatch, profile: populatedProfile };
+                });
+            }
+        }
+
+        // 3. Apply filters in-memory
+        let filteredMatches = allMatches;
+
+        if (minAge) {
+            const min = parseInt(minAge);
+            filteredMatches = filteredMatches.filter(m => (m.profile?.age || m.profile?.age === 0) && m.profile.age >= min);
+        }
+        if (maxAge) {
+            const max = parseInt(maxAge);
+            filteredMatches = filteredMatches.filter(m => (m.profile?.age || m.profile?.age === 0) && m.profile.age <= max);
+        }
+
+        // Distance filter & sorting: uses haversine formula if coordinates exist
+        if ((maxDistance || sortByDistance === 'true') && req.user) {
+            const userProfile = await Profile.findOne({ user: userId })
+                .select('location')
+                .lean();
+
+            if (userProfile?.location?.coordinates?.latitude) {
+                const { latitude: lat1, longitude: lon1 } = userProfile.location.coordinates;
+                const R = 6371; // km
+
+                filteredMatches = filteredMatches.map(m => {
+                    const coords = m.profile?.location?.coordinates;
+                    if (!coords?.latitude) return { ...m, computedDistance: Infinity }; // Keep at end
+                    const lat2 = coords.latitude;
+                    const lon2 = coords.longitude;
+                    const dLat = (lat2 - lat1) * Math.PI / 180;
+                    const dLon = (lon2 - lon1) * Math.PI / 180;
+                    const a =
+                        Math.sin(dLat / 2) ** 2 +
+                        Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) *
+                        Math.sin(dLon / 2) ** 2;
+                    const dist = R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+                    return { ...m, computedDistance: dist };
+                });
+
+                if (maxDistance) {
+                    const maxDist = parseFloat(maxDistance);
+                    filteredMatches = filteredMatches.filter(m => m.computedDistance <= maxDist);
+                }
+
+                if (sortByDistance === 'true') {
+                    filteredMatches.sort((a, b) => a.computedDistance - b.computedDistance);
+                }
+            }
+        }
+
+        if (spiritualInterests) {
+            const interests = spiritualInterests.split(',').map(s => s.trim().toLowerCase());
+            filteredMatches = filteredMatches.filter(m => {
+                const beliefs = (m.profile?.spiritualBeliefs || []).map((b) => b.toLowerCase());
+                const practices = (m.profile?.spiritualPractices || []).map((p) => p.toLowerCase());
+                return interests.some(i => beliefs.includes(i) || practices.includes(i));
             });
         }
 
-        // 2. Cache Miss: Generate instantly
-        console.log(`⚠️ [BACKEND] CACHE MISS: Generating matches on-the-fly for user ${userIdStr}`);
-        const generatedMatches = await generateMatchesForUser(userIdStr, 100);
-
-        if (generatedMatches.length > 0) {
-            // Background Cache storage
-            cacheMatches(userIdStr, generatedMatches).catch(err => console.error("Cache save error:", err));
-
-            // We need to hydrate the profile user object for the immediate response like old logic
-            const responseMatches = generatedMatches.map(m => {
-                const { populatedProfile, ...clientMatch } = m;
-                return {
-                    ...clientMatch,
-                    profile: populatedProfile
-                };
-            });
-
-            return res.json({
-                success: true,
-                matches: responseMatches.slice(0, parseInt(limit))
-            });
-        }
-
-        res.json({
+        return res.json({
             success: true,
-            matches: []
+            matches: filteredMatches.slice(0, parseInt(limit))
         });
     } catch (error) {
         console.error('Get suggested matches error:', error);
@@ -97,12 +153,17 @@ export const likeUser = async (req, res) => {
         engagement.resetDailyLimits();
 
         const subscription = req.subscription;
-        if (subscription.plan === 'basic') {
+        // Sync limits with current plan
+        engagement.syncLimitsWithPlan(subscription.plan);
+
+        // Enforce limits for non-premium plans
+        if (subscription.plan !== 'premium') {
             if (engagement.dailyLikesUsed >= engagement.dailyLikesLimit) {
                 return res.status(403).json({
                     success: false,
-                    message: 'Daily like limit reached. Upgrade to send more likes.',
-                    requiresUpgrade: true
+                    message: `Daily limit of ${engagement.dailyLikesLimit} likes reached. Upgrade to send more likes.`,
+                    requiresUpgrade: true,
+                    limit: engagement.dailyLikesLimit
                 });
             }
         }

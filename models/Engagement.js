@@ -74,6 +74,21 @@ const engagementSchema = new mongoose.Schema({
   timestamps: true
 });
 
+// Sync limits with plan
+engagementSchema.methods.syncLimitsWithPlan = function(plan) {
+  if (plan === 'premium') {
+    this.dailyLikesLimit = 9999; // Unlimited
+    this.dailyMessagesLimit = 0; // Unlimited
+  } else if (plan === 'standard') {
+    this.dailyLikesLimit = 30;
+    this.dailyMessagesLimit = 0; // Unlimited messaging for standard
+  } else {
+    // Basic / Default
+    this.dailyLikesLimit = 10;
+    this.dailyMessagesLimit = 0; // Handled by separate access check for basic
+  }
+};
+
 // Indexes
 engagementSchema.index({ user: 1 }, { unique: true });
 engagementSchema.index({ engagementScore: -1 });

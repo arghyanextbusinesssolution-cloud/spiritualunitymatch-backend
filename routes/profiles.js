@@ -60,6 +60,13 @@ router.post('/', protect, uploadPhotos, async (req, res) => {
         // Keep default
       }
     }
+    if (typeof profileData.location === 'string') {
+      try {
+        profileData.location = JSON.parse(profileData.location);
+      } catch (e) {
+        console.error('Error parsing location:', e);
+      }
+    }
     if (profileData.age && typeof profileData.age === 'string') {
       profileData.age = parseInt(profileData.age);
     }
@@ -192,16 +199,24 @@ router.get('/me', protect, async (req, res) => {
     const profile = await Profile.findOne({ user: req.user._id })
       .populate('user', 'email');
 
+    // Check if user is premium
+    const viewedSubscription = await Subscription.findOne({ user: req.user._id, status: 'active' });
+    const isPremium = viewedSubscription?.plan === 'premium';
+
     if (!profile) {
       return res.json({
         success: true,
-        profile: null
+        profile: null,
+        isPremium
       });
     }
 
     res.json({
       success: true,
-      profile
+      profile: {
+        ...profile.toObject(),
+        isPremium
+      }
     });
   } catch (error) {
     console.error('Get profile error:', error);
@@ -427,9 +442,16 @@ router.get('/:userId', protect, requireSubscription, async (req, res) => {
       }
     }
 
+    // Check if viewed user is premium
+    const viewedSubscription = await Subscription.findOne({ user: userId, status: 'active' });
+    const isPremium = viewedSubscription?.plan === 'premium';
+
     res.json({
       success: true,
-      profile
+      profile: {
+        ...profile.toObject(),
+        isPremium
+      }
     });
   } catch (error) {
     console.error('Get profile error:', error);
