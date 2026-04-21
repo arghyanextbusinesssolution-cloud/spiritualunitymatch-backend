@@ -123,7 +123,16 @@ app.get('/', (req, res) => {
   res.send('<h1>✅ Spiritual Unity Match Backend is Running!</h1><p>Visit <a href="/api/health">/api/health</a> for full status.</p>');
 });
 
-// Health check
+// Health check (top-level)
+app.get('/health', (req, res) => {
+  res.json({ 
+    status: 'ok', 
+    service: 'Spiritual Unity Match API',
+    timestamp: new Date().toISOString() 
+  });
+});
+
+// Health check (API namespaced)
 app.get('/api/health', (req, res) => {
   res.json({ 
     status: 'ok', 
