@@ -8,6 +8,8 @@ const eventSchema = new mongoose.Schema({
   endDate: { type: Date },
   location: { type: String },
   capacity: { type: Number },
+  isPaid: { type: Boolean, default: false },
+  price: { type: Number, default: 0 },
   visibleToPlans: [{ type: String }], // e.g. ['basic','standard','premium']
   createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
 }, { timestamps: true });

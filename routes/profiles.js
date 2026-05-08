@@ -324,8 +324,9 @@ router.get('/browse', protect, requireSubscription, async (req, res) => {
 router.patch('/edit-basic-info', protect, async (req, res) => {
   try {
     const userId = req.user._id;
-    const { name, email, spiritualBeliefs, spiritualPractices } = req.body;
+    const { name, email, spiritualBeliefs, spiritualPractices, location } = req.body;
     const errors = {};
+
 
     // Validate required fields
     if (!name || !name.trim()) {
@@ -386,7 +387,17 @@ router.patch('/edit-basic-info', protect, async (req, res) => {
       profile.spiritualPractices = spiritualPractices;
     }
 
+    if (location) {
+      profile.location = {
+        ...profile.location,
+        city: location.city || profile.location?.city,
+        state: location.state || profile.location?.state,
+        country: location.country || profile.location?.country
+      };
+    }
+
     await profile.save();
+
 
     res.json({
       success: true,

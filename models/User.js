@@ -17,8 +17,8 @@ const userSchema = new mongoose.Schema({
   },
   role: {
     type: String,
-    enum: ['user', 'admin'],
-    default: 'user'
+    enum: ['user', 'admin', 'basic', 'standard', 'premium'],
+    default: 'basic'
   },
   isEmailVerified: {
     type: Boolean,
@@ -33,6 +33,9 @@ const userSchema = new mongoose.Schema({
   },
   lastLogin: {
     type: Date
+  },
+  stripeCustomerId: {
+    type: String
   }
 }, {
   timestamps: true // Adds createdAt and updatedAt automatically

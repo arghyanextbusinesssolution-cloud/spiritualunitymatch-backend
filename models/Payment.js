@@ -31,13 +31,11 @@ const paymentSchema = new mongoose.Schema({
   },
   plan: {
     type: String,
-    enum: ['basic', 'standard', 'premium'],
-    required: true
+    enum: ['basic', 'standard', 'premium']
   },
   billingCycle: {
     type: String,
-    enum: ['monthly', 'yearly'],
-    required: true
+    enum: ['monthly', 'yearly']
   },
   // Status
   status: {

@@ -61,6 +61,11 @@ app.set('io', io);
 
 
 // Middleware
+app.use((req, res, next) => {
+  console.log(`📡 [INCOMING] ${req.method} ${req.originalUrl}`);
+  next();
+});
+
 // CORS configuration - allow multiple origins for production
 console.log('🌐 [CORS] Allowed Origins:', allowedOrigins);
 
@@ -86,10 +91,15 @@ app.use(cors({
 app.options('*', cors());
 
 // Stripe webhook needs raw body for signature verification
-// Register webhook route BEFORE express.json() middleware
-app.use('/api/subscriptions/webhook', express.raw({ type: 'application/json' }));
-
-app.use(express.json());
+// Captured during JSON parsing for the webhook route
+app.use(express.json({
+  verify: (req, res, buf) => {
+    if (req.originalUrl.startsWith('/api/subscriptions/webhook')) {
+      req.rawBody = buf;
+      console.log('📦 [RAW BODY] Captured for:', req.originalUrl, 'Size:', buf.length);
+    }
+  }
+}));
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 

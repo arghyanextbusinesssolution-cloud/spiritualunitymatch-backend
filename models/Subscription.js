@@ -64,7 +64,6 @@ const subscriptionSchema = new mongoose.Schema({
 });
 
 // Indexes
-subscriptionSchema.index({ user: 1 });
 subscriptionSchema.index({ status: 1 });
 subscriptionSchema.index({ stripeSubscriptionId: 1 });
 

@@ -6,8 +6,13 @@ import { protect, adminOnly } from '../middleware/auth.js';
 import upload, { uploadToCloudinary } from '../middleware/upload.js';
 import { generateICS } from '../services/icsService.js';
 import { sendRegistrationEmail } from '../services/emailService.js';
+import Stripe from 'stripe';
 
 const router = express.Router();
+
+// Initialize Stripe
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 
 // Admin: upload image to Cloudinary (MUST be before other POST routes)
 router.post('/upload-image', protect, upload.single('image'), async (req, res) => {
@@ -52,7 +57,8 @@ router.post('/upload-image', protect, upload.single('image'), async (req, res) =
 // Admin creates an event
 router.post('/', adminOnly, async (req, res) => {
   try {
-    const { title, description, image, startDate, endDate, location, capacity, visibleToPlans } = req.body;
+    const { title, description, image, startDate, endDate, location, capacity, visibleToPlans, isPaid, price } = req.body;
+
     
     // Log event creation details with date/time
     console.log('📅 [EVENT CREATION] Admin creating new event:', {
@@ -95,9 +101,12 @@ router.post('/', adminOnly, async (req, res) => {
       endDate,
       location,
       capacity,
+      isPaid: !!isPaid,
+      price: price || 0,
       visibleToPlans: Array.isArray(visibleToPlans) ? visibleToPlans : [],
       createdBy: req.user._id
     });
+
     
     console.log('✅ [EVENT CREATION] Event saved to database:', {
       eventId: event._id,
@@ -200,9 +209,29 @@ router.post('/:id/register', protect, async (req, res) => {
 
     // Check already registered
     const already = await EventRegistration.findOne({ event: event._id, user: req.user._id });
-    if (already) return res.status(400).json({ success: false, message: 'Already registered' });
+    if (already) {
+      if (already.paymentStatus === 'completed' || already.paymentStatus === 'free') {
+        return res.status(400).json({ success: false, message: 'Already registered' });
+      }
+      // If pending, they might be trying to register again for a free event or need to pay
+    }
 
-    const registration = await EventRegistration.create({ event: event._id, user: req.user._id });
+    // If event is paid, user must use checkout route instead
+    if (event.isPaid && event.price > 0) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'This is a paid event. Please use the checkout option to register.',
+        isPaid: true,
+        price: event.price
+      });
+    }
+
+    const registration = await EventRegistration.create({ 
+      event: event._id, 
+      user: req.user._id,
+      paymentStatus: 'free'
+    });
+
 
     // Generate ICS and send confirmation email (best-effort)
     try {
@@ -239,6 +268,122 @@ router.delete('/:id/register', protect, async (req, res) => {
   } catch (error) {
     console.error('Cancel registration error:', error);
     res.status(500).json({ success: false, message: 'Error cancelling registration' });
+  }
+});
+
+// @route   POST /api/events/:id/create-checkout
+// @desc    Create Stripe checkout session for paid event
+// @access  Private
+router.post('/:id/create-checkout', protect, async (req, res) => {
+  try {
+    const event = await Event.findById(req.params.id);
+    if (!event) return res.status(404).json({ success: false, message: 'Event not found' });
+    
+    if (!event.isPaid || event.price <= 0) {
+      return res.status(400).json({ success: false, message: 'This is a free event' });
+    }
+
+    // Check capacity
+    if (event.capacity) {
+      const count = await EventRegistration.countDocuments({ 
+        event: event._id, 
+        paymentStatus: { $in: ['completed', 'free'] } 
+      });
+      if (count >= event.capacity) {
+        return res.status(400).json({ success: false, message: 'Event is full' });
+      }
+    }
+
+    // Check if already registered
+    const already = await EventRegistration.findOne({ event: event._id, user: req.user._id });
+    if (already && (already.paymentStatus === 'completed' || already.paymentStatus === 'free')) {
+      return res.status(400).json({ success: false, message: 'Already registered' });
+    }
+
+    // ============================================
+    // TEST MODE: Direct activation for paid events
+    // ============================================
+    // If Stripe key is placeholder or missing, allow bypass in development
+    const isTestMode = !process.env.STRIPE_SECRET_KEY || 
+                      process.env.STRIPE_SECRET_KEY === 'sk_test_your_stripe_secret_key' ||
+                      process.env.NODE_ENV === 'development';
+
+    if (isTestMode) {
+      console.log('🧪 [EVENT CHECKOUT] TEST MODE ACTIVE: Bypassing Stripe for event:', event.title);
+      
+      // Create or update registration directly as completed
+      let registration = await EventRegistration.findOne({ event: event._id, user: req.user._id });
+      
+      if (!registration) {
+        registration = await EventRegistration.create({
+          event: event._id,
+          user: req.user._id,
+          paymentStatus: 'completed',
+          stripeSessionId: 'test_session_' + Date.now()
+        });
+      } else {
+        registration.paymentStatus = 'completed';
+        registration.stripeSessionId = 'test_session_' + Date.now();
+        await registration.save();
+      }
+
+      return res.json({ 
+        success: true, 
+        message: 'Registration successful (Test Mode Bypass)',
+        sessionId: 'test_session',
+        url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/events/${event._id}?success=true`
+      });
+    }
+
+    // Create Stripe Checkout Session
+    const session = await stripe.checkout.sessions.create({
+      payment_method_types: ['card'],
+      line_items: [
+        {
+          price_data: {
+            currency: 'usd',
+            product_data: {
+              name: event.title,
+              description: event.description?.substring(0, 255) || 'Event Registration',
+              images: event.image ? [event.image] : [],
+            },
+            unit_amount: Math.round(event.price * 100), // Stripe uses cents
+          },
+          quantity: 1,
+        },
+      ],
+      mode: 'payment',
+      success_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/events/${event._id}?success=true&session_id={CHECKOUT_SESSION_ID}`,
+      cancel_url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/events/${event._id}?canceled=true`,
+      metadata: {
+        eventId: event._id.toString(),
+        userId: req.user._id.toString(),
+        type: 'event_registration'
+      }
+    });
+
+    // Create a pending registration if not already exists
+    if (!already) {
+      await EventRegistration.create({
+        event: event._id,
+        user: req.user._id,
+        paymentStatus: 'pending',
+        stripeSessionId: session.id
+      });
+    } else {
+      already.stripeSessionId = session.id;
+      already.paymentStatus = 'pending';
+      await already.save();
+    }
+
+    res.json({ success: true, sessionId: session.id, url: session.url });
+  } catch (error) {
+    console.error('❌ [EVENT CHECKOUT] error:', error);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Error creating checkout session',
+      error: error.message 
+    });
   }
 });
 

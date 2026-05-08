@@ -1,15 +1,18 @@
 import express from 'express';
-// import Stripe from 'stripe'; // COMMENTED OUT FOR TESTING - No payment needed
+import Stripe from 'stripe';
 import { protect } from '../middleware/auth.js';
 import Subscription from '../models/Subscription.js';
 import Payment from '../models/Payment.js';
 import User from '../models/User.js';
 import Notification from '../models/Notification.js';
+import EventRegistration from '../models/EventRegistration.js';
+
 
 const router = express.Router();
 
-// Initialize Stripe (COMMENTED OUT FOR TESTING)
-// const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+// Initialize Stripe
+const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
+
 
 // Plan configuration
 // These price IDs need to be set up in Stripe Dashboard
@@ -29,11 +32,12 @@ const PLAN_PRICES = {
 };
 
 // @route   POST /api/subscriptions/create-checkout
-// @desc    Create Stripe checkout session (TEST MODE: Direct activation without payment)
+// @desc    Create Stripe checkout session
 // @access  Private
 router.post('/create-checkout', protect, async (req, res) => {
   try {
-    const { plan, billingCycle } = req.body;
+    const plan = req.body.plan || req.body.planId;
+    const billingCycle = req.body.billingCycle;
 
     if (!plan || !['basic', 'standard', 'premium'].includes(plan)) {
       return res.status(400).json({
@@ -49,94 +53,25 @@ router.post('/create-checkout', protect, async (req, res) => {
       });
     }
 
-    // ============================================
-    // TEST MODE: Direct activation without payment
-    // ============================================
-    // Comment out Stripe code for testing - activate plan immediately
-
-    const userId = req.user._id;
-
-    // Calculate end date based on billing cycle
-    const endDate = new Date();
-    if (billingCycle === 'monthly') {
-      endDate.setMonth(endDate.getMonth() + 1);
-    } else {
-      endDate.setFullYear(endDate.getFullYear() + 1);
-    }
-
-    // Create or update subscription directly
-    let subscription = await Subscription.findOne({ user: userId });
-
-    if (!subscription) {
-      subscription = new Subscription({
-        user: userId,
-        plan,
-        status: 'active',
-        billingCycle,
-        startDate: new Date(),
-        endDate: endDate
-      });
-    } else {
-      subscription.plan = plan;
-      subscription.status = 'active';
-      subscription.billingCycle = billingCycle;
-      subscription.startDate = new Date();
-      subscription.endDate = endDate;
-      subscription.canceledAt = null;
-      subscription.cancelAtPeriodEnd = false;
-    }
-
-    // Update features based on plan
-    subscription.updateFeatures();
-    await subscription.save();
-
-    // Create a test payment record (optional - for tracking)
-    await Payment.create({
-      user: userId,
-      subscription: subscription._id,
-      amount: 0, // Free for testing
-      currency: 'usd',
-      plan,
-      billingCycle,
-      status: 'succeeded',
-      metadata: { test_mode: true }
-    });
-
-    // Create notification
-    await Notification.create({
-      user: userId,
-      type: 'subscription_activated',
-      title: 'Subscription Activated',
-      message: `Your ${plan} subscription has been activated! (Test Mode)`,
-      actionUrl: '/dashboard'
-    });
-
-    console.log(`✅ TEST MODE: Subscription activated for user ${userId}: ${plan} (${billingCycle})`);
-
-    // Return success response (no Stripe redirect needed)
-    res.json({
-      success: true,
-      message: 'Subscription activated successfully (Test Mode)',
-      subscription: {
-        plan: subscription.plan,
-        status: subscription.status,
-        billingCycle: subscription.billingCycle
-      },
-      redirectUrl: '/subscription/success'
-    });
-
-    // ============================================
-    // PRODUCTION CODE (COMMENTED OUT FOR TESTING)
-    // ============================================
-    /*
     const priceId = PLAN_PRICES[plan][billingCycle];
+
+    if (!priceId || priceId.startsWith('price_')) {
+        // If it's still the placeholder or missing, and we're not in a test mode that allows it
+        if (priceId === 'price_basic_monthly' || priceId === 'price_basic_yearly' || 
+            priceId === 'price_standard_yearly' || priceId === 'price_premium_yearly') {
+            return res.status(400).json({
+                success: false,
+                message: `This plan option (${plan} ${billingCycle}) is not yet configured in Stripe.`
+            });
+        }
+    }
 
     // Get or create Stripe customer
     let customerId;
-    const existingSubscription = await Subscription.findOne({ user: req.user._id });
+    const user = await User.findById(req.user._id);
     
-    if (existingSubscription?.stripeCustomerId) {
-      customerId = existingSubscription.stripeCustomerId;
+    if (user.stripeCustomerId) {
+      customerId = user.stripeCustomerId;
     } else {
       // Create new Stripe customer
       const customer = await stripe.customers.create({
@@ -146,8 +81,14 @@ router.post('/create-checkout', protect, async (req, res) => {
         }
       });
       customerId = customer.id;
+      
+      // Save customer ID to user
+      user.stripeCustomerId = customerId;
+      await user.save();
     }
 
+    console.log(`🔗 [STRIPE] Creating session for user ${req.user.email} with plan ${plan}`);
+    
     // Create checkout session
     const session = await stripe.checkout.sessions.create({
       customer: customerId,
@@ -168,14 +109,19 @@ router.post('/create-checkout', protect, async (req, res) => {
       }
     });
 
+    console.log(`✅ [STRIPE] Checkout URL created: ${session.url}`);
+
     res.json({
       success: true,
       sessionId: session.id,
-      url: session.url
+      url: session.url,
+      redirectUrl: session.url
     });
-    */
   } catch (error) {
-    console.error('Checkout creation error:', error);
+    console.error('❌ [STRIPE] Checkout creation failed!');
+    console.error('❌ [STRIPE] Error Message:', error.message);
+    console.error('❌ [STRIPE] Account being used (partial key):', process.env.STRIPE_SECRET_KEY?.substring(0, 10) + '...');
+    
     res.status(500).json({
       success: false,
       message: 'Error creating checkout session',
@@ -187,119 +133,221 @@ router.post('/create-checkout', protect, async (req, res) => {
 // @route   POST /api/subscriptions/webhook
 // @desc    Stripe webhook handler
 // @access  Public (Stripe calls this)
-// Note: Raw body middleware is applied in server.js before express.json()
 router.post('/webhook', async (req, res) => {
   const sig = req.headers['stripe-signature'];
   let event;
 
+  console.log('🔔 [WEBHOOK] Received Stripe webhook request');
+  console.log('🔔 [WEBHOOK] Signature header present:', !!sig);
+
   try {
     // Verify webhook signature
+    // Use rawBody captured in server.js if available, otherwise fallback to req.body
+    const payload = req.rawBody || req.body;
+    
+    console.log('🔔 [WEBHOOK] Payload type:', typeof payload, 'isBuffer:', Buffer.isBuffer(payload));
+    
     event = stripe.webhooks.constructEvent(
-      req.body,
+      payload,
       sig,
       process.env.STRIPE_WEBHOOK_SECRET
     );
+    console.log('✅ [WEBHOOK] Signature verified. Event Type:', event.type);
   } catch (err) {
-    console.error('Webhook signature verification failed:', err.message);
+    console.error('❌ [WEBHOOK] Signature verification failed!');
+    console.error('❌ [WEBHOOK] Error:', err.message);
+    console.error('❌ [WEBHOOK] Header Sig:', sig ? sig.substring(0, 20) + '...' : 'MISSING');
+    console.error('❌ [WEBHOOK] Secret used (partial):', process.env.STRIPE_WEBHOOK_SECRET ? process.env.STRIPE_WEBHOOK_SECRET.substring(0, 10) + '...' : 'MISSING');
     return res.status(400).send(`Webhook Error: ${err.message}`);
   }
+
+  console.log('✅ [WEBHOOK] Event constructed successfully:', event.id);
 
   try {
     // Handle different event types
     switch (event.type) {
       case 'checkout.session.completed':
+        console.log('💰 [WEBHOOK] Handling checkout.session.completed');
         await handleCheckoutCompleted(event.data.object);
         break;
 
       case 'customer.subscription.created':
+        console.log('📝 [WEBHOOK] Handling customer.subscription.created');
+        await handleSubscriptionUpdated(event.data.object);
+        break;
+      
       case 'customer.subscription.updated':
+        console.log('🔄 [WEBHOOK] Handling customer.subscription.updated');
         await handleSubscriptionUpdated(event.data.object);
         break;
 
       case 'customer.subscription.deleted':
+        console.log('🗑️ [WEBHOOK] Handling customer.subscription.deleted');
         await handleSubscriptionDeleted(event.data.object);
         break;
 
       case 'invoice.payment_succeeded':
+        console.log('💵 [WEBHOOK] Handling invoice.payment_succeeded');
         await handlePaymentSucceeded(event.data.object);
         break;
 
       case 'invoice.payment_failed':
+        console.log('⚠️ [WEBHOOK] Handling invoice.payment_failed');
         await handlePaymentFailed(event.data.object);
         break;
+      
+      default:
+        console.log('ℹ️ [WEBHOOK] Unhandled event type:', event.type);
     }
 
     res.json({ received: true });
   } catch (error) {
-    console.error('Webhook handler error:', error);
+    console.error('❌ [WEBHOOK] Handler error:', error);
     res.status(500).json({ error: 'Webhook handler failed' });
   }
 });
 
 // Handle checkout completion
 async function handleCheckoutCompleted(session) {
-  const userId = session.metadata.userId;
-  const plan = session.metadata.plan;
-  const billingCycle = session.metadata.billingCycle;
+  try {
+    const metadata = session.metadata || {};
+    const userId = metadata.userId;
+    
+    console.log(`🔍 [WEBHOOK] Processing session ${session.id}`);
+    console.log(`🔍 [WEBHOOK] User ID from metadata: ${userId}`);
+    console.log(`🔍 [WEBHOOK] Metadata:`, JSON.stringify(metadata, null, 2));
 
-  // Get subscription from Stripe
-  const subscription = await stripe.subscriptions.retrieve(session.subscription);
+    if (metadata.type === 'event_registration') {
+      const eventId = metadata.eventId;
+      console.log(`✅ [WEBHOOK] Handling event registration for user ${userId} and event ${eventId}`);
+      
+      const registration = await EventRegistration.findOne({ 
+        event: eventId, 
+        user: userId 
+      });
+      
+      if (registration) {
+        registration.paymentStatus = 'completed';
+        registration.stripeSessionId = session.id;
+        await registration.save();
+        console.log(`✅ [WEBHOOK] Registration updated to completed for event ${eventId}`);
+      } else {
+        await EventRegistration.create({
+          event: eventId,
+          user: userId,
+          paymentStatus: 'completed',
+          stripeSessionId: session.id
+        });
+        console.log(`✅ [WEBHOOK] New registration created for event ${eventId}`);
+      }
 
-  // Create or update subscription in database
-  let userSubscription = await Subscription.findOne({ user: userId });
+      // Create payment record for event
+      await Payment.create({
+        user: userId,
+        stripeSessionId: session.id,
+        stripePaymentIntentId: session.payment_intent,
+        amount: session.amount_total / 100,
+        currency: session.currency,
+        status: 'succeeded',
+        metadata: { eventId, type: 'event_registration' }
+      });
 
-  if (!userSubscription) {
-    userSubscription = new Subscription({
+      // Create notification
+      await Notification.create({
+        user: userId,
+        type: 'event_reminder',
+        title: 'Event Registration Confirmed',
+        message: `Your payment for the event has been confirmed!`,
+        actionUrl: `/events/${eventId}`
+      });
+
+      return;
+    }
+
+    // Handle Subscription
+    const plan = metadata.plan;
+    const billingCycle = metadata.billingCycle;
+
+    if (!plan) {
+      console.log('⚠️ [WEBHOOK] No plan found in metadata, skipping subscription handling');
+      return;
+    }
+
+    console.log(`📦 [WEBHOOK] Activating ${plan} (${billingCycle}) for user ${userId}`);
+
+    // Get subscription from Stripe
+    const subscription = await stripe.subscriptions.retrieve(session.subscription);
+    console.log(`🎫 [WEBHOOK] Stripe Subscription retrieved: ${subscription.id}`);
+
+
+    // Create or update subscription in database
+    let userSubscription = await Subscription.findOne({ user: userId });
+
+    if (!userSubscription) {
+      console.log('🆕 [WEBHOOK] Creating new subscription record');
+      userSubscription = new Subscription({
+        user: userId,
+        plan,
+        status: 'active',
+        stripeCustomerId: session.customer,
+        stripeSubscriptionId: subscription.id,
+        stripePriceId: subscription.items.data[0].price.id,
+        billingCycle,
+        startDate: new Date(subscription.current_period_start * 1000),
+        endDate: new Date(subscription.current_period_end * 1000)
+      });
+    } else {
+      console.log('🔄 [WEBHOOK] Updating existing subscription record');
+      userSubscription.plan = plan;
+      userSubscription.status = 'active';
+      userSubscription.stripeCustomerId = session.customer;
+      userSubscription.stripeSubscriptionId = subscription.id;
+      userSubscription.stripePriceId = subscription.items.data[0].price.id;
+      userSubscription.billingCycle = billingCycle;
+      userSubscription.startDate = new Date(subscription.current_period_start * 1000);
+      userSubscription.endDate = new Date(subscription.current_period_end * 1000);
+      userSubscription.canceledAt = null;
+      userSubscription.cancelAtPeriodEnd = false;
+    }
+
+    // Update features based on plan
+    userSubscription.updateFeatures();
+    await userSubscription.save();
+    console.log('✅ [WEBHOOK] Subscription saved to database');
+
+    // CRITICAL: Update User role so frontend and other routes know they are upgraded
+    const updatedUser = await User.findByIdAndUpdate(userId, { role: plan }, { new: true });
+    console.log(`✅ [WEBHOOK] User role updated to ${plan} for ${updatedUser?.email}`);
+
+    // Create payment record
+    await Payment.create({
       user: userId,
+      subscription: userSubscription._id,
+      stripeSessionId: session.id,
+      stripePaymentIntentId: session.payment_intent,
+      amount: session.amount_total / 100, // Convert from cents
+      currency: session.currency,
       plan,
-      status: 'active',
-      stripeCustomerId: session.customer,
-      stripeSubscriptionId: subscription.id,
-      stripePriceId: subscription.items.data[0].price.id,
       billingCycle,
-      startDate: new Date(subscription.current_period_start * 1000),
-      endDate: new Date(subscription.current_period_end * 1000)
+      status: 'succeeded'
     });
-  } else {
-    userSubscription.plan = plan;
-    userSubscription.status = 'active';
-    userSubscription.stripeCustomerId = session.customer;
-    userSubscription.stripeSubscriptionId = subscription.id;
-    userSubscription.stripePriceId = subscription.items.data[0].price.id;
-    userSubscription.billingCycle = billingCycle;
-    userSubscription.startDate = new Date(subscription.current_period_start * 1000);
-    userSubscription.endDate = new Date(subscription.current_period_end * 1000);
-    userSubscription.canceledAt = null;
-    userSubscription.cancelAtPeriodEnd = false;
+    console.log('✅ [WEBHOOK] Payment record created');
+
+    // Create notification
+    await Notification.create({
+      user: userId,
+      type: 'subscription_activated',
+      title: 'Subscription Activated',
+      message: `Your ${plan} subscription has been activated!`,
+      actionUrl: '/dashboard'
+    });
+
+    console.log(`🎉 [WEBHOOK] SUCCESS: Subscription activated for user ${userId}`);
+  } catch (error) {
+    console.error('❌ [WEBHOOK] Error in handleCheckoutCompleted:', error);
+    // We don't re-throw here so the webhook response (200) can still be sent, 
+    // but the error is logged for debugging.
   }
-
-  // Update features based on plan
-  userSubscription.updateFeatures();
-  await userSubscription.save();
-
-  // Create payment record
-  await Payment.create({
-    user: userId,
-    subscription: userSubscription._id,
-    stripeSessionId: session.id,
-    stripePaymentIntentId: session.payment_intent,
-    amount: session.amount_total / 100, // Convert from cents
-    currency: session.currency,
-    plan,
-    billingCycle,
-    status: 'succeeded'
-  });
-
-  // Create notification
-  await Notification.create({
-    user: userId,
-    type: 'subscription_activated',
-    title: 'Subscription Activated',
-    message: `Your ${plan} subscription has been activated!`,
-    actionUrl: '/dashboard'
-  });
-
-  console.log(`Subscription activated for user ${userId}: ${plan} (${billingCycle})`);
 }
 
 // Handle subscription updates
@@ -332,6 +380,10 @@ async function handleSubscriptionDeleted(stripeSubscription) {
     subscription.status = 'canceled';
     subscription.canceledAt = new Date();
     await subscription.save();
+
+    // Reset user role to basic
+    await User.findByIdAndUpdate(subscription.user, { role: 'basic' });
+    console.log(`🗑️ [WEBHOOK] User role reset to basic for user ${subscription.user}`);
 
     // Create notification
     await Notification.create({
@@ -498,7 +550,7 @@ router.get('/details', protect, async (req, res) => {
         yearlyPrice: 49.99
       },
       standard: {
-        name: 'Spiritual Seeker',
+        name: 'Dating Basic',
         description: 'Deepen your connections',
         features: [
           'Unlimited browsing',
@@ -508,11 +560,11 @@ router.get('/details', protect, async (req, res) => {
           'Community events',
           'Soul check-ins'
         ],
-        monthlyPrice: 9.99,
-        yearlyPrice: 99.99
+        monthlyPrice: 19.00,
+        yearlyPrice: 190.00
       },
       premium: {
-        name: 'Divine Connection',
+        name: 'Dating Premium',
         description: 'Ultimate spiritual experience',
         features: [
           'Everything in Standard',
@@ -524,8 +576,8 @@ router.get('/details', protect, async (req, res) => {
           'VIP support',
           'Spiritual coaching'
         ],
-        monthlyPrice: 19.99,
-        yearlyPrice: 199.99
+        monthlyPrice: 39.00,
+        yearlyPrice: 390.00
       }
     };
 
