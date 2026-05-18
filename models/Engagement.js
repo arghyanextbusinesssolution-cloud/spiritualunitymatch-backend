@@ -53,6 +53,14 @@ const engagementSchema = new mongoose.Schema({
     type: Number,
     default: 5 // Basic plan default
   },
+  dailySwipesUsed: {
+    type: Number,
+    default: 0
+  },
+  dailySwipesLimit: {
+    type: Number,
+    default: 10 // Basic plan default
+  },
   dailyMessagesUsed: {
     type: Number,
     default: 0
@@ -77,14 +85,17 @@ const engagementSchema = new mongoose.Schema({
 // Sync limits with plan
 engagementSchema.methods.syncLimitsWithPlan = function(plan) {
   if (plan === 'premium') {
-    this.dailyLikesLimit = 9999; // Unlimited
+    this.dailyLikesLimit = 99999;
+    this.dailySwipesLimit = 99999; // Unlimited
     this.dailyMessagesLimit = 0; // Unlimited
   } else if (plan === 'standard') {
     this.dailyLikesLimit = 30;
+    this.dailySwipesLimit = 30; // 30 swipes
     this.dailyMessagesLimit = 0; // Unlimited messaging for standard
   } else {
-    // Basic / Default
+    // Basic / Default / Free
     this.dailyLikesLimit = 10;
+    this.dailySwipesLimit = 10; // 10 swipes
     this.dailyMessagesLimit = 0; // Handled by separate access check for basic
   }
 };
@@ -102,6 +113,7 @@ engagementSchema.methods.resetDailyLimits = function() {
   // If it's a new day, reset counters
   if (today.toDateString() !== lastReset.toDateString()) {
     this.dailyLikesUsed = 0;
+    this.dailySwipesUsed = 0;
     this.dailyMessagesUsed = 0;
     this.lastResetDate = today;
   }

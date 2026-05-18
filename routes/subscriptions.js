@@ -471,6 +471,7 @@ router.get('/my-subscription', protect, async (req, res) => {
         startDate: subscription.startDate,
         endDate: subscription.endDate,
         features: subscription.features,
+        cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
         isActive: subscription.isActive()
       }
     });

@@ -156,14 +156,14 @@ export const likeUser = async (req, res) => {
         // Sync limits with current plan
         engagement.syncLimitsWithPlan(subscription.plan);
 
-        // Enforce limits for non-premium plans
+        // Enforce total swipe limits for non-premium plans
         if (subscription.plan !== 'premium') {
-            if (engagement.dailyLikesUsed >= engagement.dailyLikesLimit) {
+            if (engagement.dailySwipesUsed >= engagement.dailySwipesLimit) {
                 return res.status(403).json({
                     success: false,
-                    message: `Daily limit of ${engagement.dailyLikesLimit} likes reached. Upgrade to send more likes.`,
+                    message: `Daily limit of ${engagement.dailySwipesLimit} swipes reached. Upgrade your plan for unlimited swipes.`,
                     requiresUpgrade: true,
-                    limit: engagement.dailyLikesLimit
+                    limit: engagement.dailySwipesLimit
                 });
             }
         }
@@ -212,6 +212,7 @@ export const likeUser = async (req, res) => {
 
         engagement.likesSent += 1;
         engagement.dailyLikesUsed += 1;
+        engagement.dailySwipesUsed += 1;
         engagement.lastLike = new Date();
         engagement.calculateEngagementScore();
         await engagement.save();
@@ -325,6 +326,27 @@ export const rejectUser = async (req, res) => {
             return res.status(400).json({ success: false, message: 'Cannot reject yourself' });
         }
 
+        let engagement = await Engagement.findOne({ user: userIdStr });
+        if (!engagement) engagement = new Engagement({ user: userIdStr });
+
+        engagement.resetDailyLimits();
+
+        const subscription = req.subscription;
+        // Sync limits with current plan
+        engagement.syncLimitsWithPlan(subscription.plan);
+
+        // Enforce total swipe limits for non-premium plans
+        if (subscription.plan !== 'premium') {
+            if (engagement.dailySwipesUsed >= engagement.dailySwipesLimit) {
+                return res.status(403).json({
+                    success: false,
+                    message: `Daily limit of ${engagement.dailySwipesLimit} swipes reached. Upgrade your plan for unlimited swipes.`,
+                    requiresUpgrade: true,
+                    limit: engagement.dailySwipesLimit
+                });
+            }
+        }
+
         const expiresAt = new Date();
         expiresAt.setDate(expiresAt.getDate() + 7);
 
@@ -345,6 +367,10 @@ export const rejectUser = async (req, res) => {
         }
 
         await rejection.save();
+
+        // Increment swipes
+        engagement.dailySwipesUsed += 1;
+        await engagement.save();
 
         // Remove from suggested matches cache
         await removeMatchFromCache(userIdStr, rejectedUserId);

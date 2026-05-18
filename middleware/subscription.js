@@ -13,11 +13,18 @@ export const requireSubscription = async (req, res, next) => {
     });
 
     if (!subscription) {
-      return res.status(403).json({
-        success: false,
-        message: 'Active subscription required',
-        requiresPlan: true
-      });
+      // If there is no active subscription, the user is on the "free" (basic) plan.
+      // We will attach a mock subscription with 'basic' plan so they can proceed.
+      req.subscription = {
+        plan: 'basic',
+        features: {
+          unlimitedBrowsing: false,
+          messaging: false,
+          seeLikes: false,
+          advancedFilters: false
+        }
+      };
+      return next();
     }
 
     // Attach subscription to request
