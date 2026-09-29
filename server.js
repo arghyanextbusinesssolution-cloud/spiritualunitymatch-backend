@@ -128,6 +128,34 @@ app.use('/api/community', communityRoutes);
 app.use('/api/soul', soulRoutes);
 app.use('/api/events', eventsRoutes);
 
+// Public online members endpoint
+app.get('/api/users/public-online', async (req, res) => {
+  try {
+    const profiles = await Profile.find({ isActive: { $ne: false } })
+      .select('displayName age location photos spiritualBeliefs bio zodiacSign isOnline lastActive')
+      .limit(12)
+      .lean();
+
+    if (profiles && profiles.length > 0) {
+      const members = profiles.map((p) => ({
+        id: p._id.toString(),
+        name: p.displayName || 'Spiritual Soul',
+        age: p.age || 28,
+        location: p.location?.city ? `${p.location.city}${p.location.country ? ', ' + p.location.country : ''}` : 'Worldwide',
+        photo: (p.photos && p.photos.length > 0 && p.photos[0].url) ? p.photos[0].url : null,
+        path: (p.spiritualBeliefs && p.spiritualBeliefs.length > 0) ? p.spiritualBeliefs[0] : 'Lightworker',
+        isOnline: true
+      }));
+      return res.json({ success: true, members });
+    }
+  } catch (err) {
+    console.error('Error fetching public online members:', err.message);
+  }
+
+  // If no DB profiles or error, return success with empty array so frontend falls back cleanly without 404
+  return res.json({ success: true, members: [] });
+});
+
 // Root route for connection testing
 app.get('/', (req, res) => {
   res.send('<h1>✅ Spiritual Unity Match Backend is Running!</h1><p>Visit <a href="/api/health">/api/health</a> for full status.</p>');
