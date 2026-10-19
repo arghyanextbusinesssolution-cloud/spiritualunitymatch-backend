@@ -19,6 +19,7 @@ import spiritualRoutes from './routes/spiritual.js';
 import communityRoutes from './routes/community.js';
 import soulRoutes from './routes/soul.js';
 import eventsRoutes from './routes/events.js';
+import blogRoutes from './routes/blogs.js';
 
 // Import Services
 import { initializeSocket } from './services/socketService.js';
@@ -127,6 +128,7 @@ app.use('/api/spiritual', spiritualRoutes);
 app.use('/api/community', communityRoutes);
 app.use('/api/soul', soulRoutes);
 app.use('/api/events', eventsRoutes);
+app.use('/api/blogs', blogRoutes);
 
 // Public online members endpoint
 app.get('/api/users/public-online', async (req, res) => {
