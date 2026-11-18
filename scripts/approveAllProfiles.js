@@ -5,7 +5,7 @@ import Profile from '../models/Profile.js';
 dotenv.config();
 
 // MongoDB Connection
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://arghyanextbusinesssolution_db_user:HIoHvpDclQ9ei0NO@cluster0.ulsxizj.mongodb.net/?appName=Cluster0';
+const MONGODB_URI = process.env.MONGODB_URI; // set in .env - never hardcode credentials
 
 async function approveAllProfiles() {
   try {

@@ -105,7 +105,7 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 
 // MongoDB Connection with improved error handling
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://arghyanextbusinesssolution_db_user:HIoHvpDclQ9ei0NO@cluster0.ulsxizj.mongodb.net/dating-website?appName=Cluster0';
+const MONGODB_URI = process.env.MONGODB_URI; // set in .env - never hardcode credentials
 
 console.log('🔌 [DB] Attempting connection to MongoDB...');
 mongoose.connect(MONGODB_URI)
