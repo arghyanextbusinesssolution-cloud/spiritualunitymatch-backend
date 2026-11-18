@@ -300,41 +300,6 @@ router.post('/:id/create-checkout', protect, async (req, res) => {
       return res.status(400).json({ success: false, message: 'Already registered' });
     }
 
-    // ============================================
-    // TEST MODE: Direct activation for paid events
-    // ============================================
-    // If Stripe key is placeholder or missing, allow bypass in development
-    const isTestMode = !process.env.STRIPE_SECRET_KEY || 
-                      process.env.STRIPE_SECRET_KEY === 'sk_test_your_stripe_secret_key' ||
-                      process.env.NODE_ENV === 'development';
-
-    if (isTestMode) {
-      console.log('🧪 [EVENT CHECKOUT] TEST MODE ACTIVE: Bypassing Stripe for event:', event.title);
-      
-      // Create or update registration directly as completed
-      let registration = await EventRegistration.findOne({ event: event._id, user: req.user._id });
-      
-      if (!registration) {
-        registration = await EventRegistration.create({
-          event: event._id,
-          user: req.user._id,
-          paymentStatus: 'completed',
-          stripeSessionId: 'test_session_' + Date.now()
-        });
-      } else {
-        registration.paymentStatus = 'completed';
-        registration.stripeSessionId = 'test_session_' + Date.now();
-        await registration.save();
-      }
-
-      return res.json({ 
-        success: true, 
-        message: 'Registration successful (Test Mode Bypass)',
-        sessionId: 'test_session',
-        url: `${process.env.FRONTEND_URL || 'http://localhost:3000'}/events/${event._id}?success=true`
-      });
-    }
-
     // Create Stripe Checkout Session
     const session = await stripe.checkout.sessions.create({
       payment_method_types: ['card'],

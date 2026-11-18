@@ -413,6 +413,27 @@ router.patch('/edit-basic-info', protect, async (req, res) => {
   }
 });
 
+// @route   GET /api/profiles/stats
+// @desc    Current user's profile stats (Tasks / Likes / Moments on the profile page)
+// @access  Private
+// NOTE: must be declared BEFORE '/:userId', otherwise "stats" is treated as a user ID
+router.get('/stats', protect, async (req, res) => {
+  try {
+    const engagement = await Engagement.findOne({ user: req.user._id }).lean();
+    res.json({
+      success: true,
+      stats: {
+        activities: (engagement?.likesSent || 0) + (engagement?.messagesSent || 0),
+        likes: engagement?.likesReceived || 0,
+        moments: engagement?.matches || 0
+      }
+    });
+  } catch (error) {
+    console.error('Get profile stats error:', error);
+    res.status(500).json({ success: false, message: 'Error fetching stats' });
+  }
+});
+
 // @route   GET /api/profiles/:userId
 // @desc    Get a specific user's profile
 // @access  Private (requires subscription)
@@ -420,6 +441,10 @@ router.get('/:userId', protect, requireSubscription, async (req, res) => {
   try {
     const { userId } = req.params;
     const viewerId = req.user._id;
+
+    if (!/^[a-f\d]{24}$/i.test(userId)) {
+      return res.status(400).json({ success: false, message: 'Invalid user ID' });
+    }
 
     // Don't allow viewing own profile through this route
     if (userId === viewerId.toString()) {

@@ -1,7 +1,7 @@
 import express from 'express';
 import multer from 'multer';
 import { v2 as cloudinary } from 'cloudinary';
-import { protect, adminOnly } from '../middleware/auth.js';
+import { protect, blogEditorOnly } from '../middleware/auth.js';
 import Blog from '../models/Blog.js';
 
 const router = express.Router();
@@ -102,7 +102,7 @@ router.get('/:slug', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 
 // GET /api/blogs/admin/all – admin: all blogs including drafts
-router.get('/admin/all', protect, adminOnly, async (req, res) => {
+router.get('/admin/all', protect, blogEditorOnly, async (req, res) => {
   try {
     const blogs = await Blog.find().sort({ createdAt: -1 }).lean();
     res.json({ success: true, blogs });
@@ -112,7 +112,7 @@ router.get('/admin/all', protect, adminOnly, async (req, res) => {
 });
 
 // POST /api/blogs  – admin: create blog with optional image
-router.post('/', protect, adminOnly, upload.single('image'), async (req, res) => {
+router.post('/', protect, blogEditorOnly, upload.single('image'), async (req, res) => {
   try {
     const { title, excerpt, content, category, author, featured, published, readTime, tags } = req.body;
 
@@ -143,7 +143,7 @@ router.post('/', protect, adminOnly, upload.single('image'), async (req, res) =>
 });
 
 // PUT /api/blogs/:id  – admin: update blog
-router.put('/:id', protect, adminOnly, upload.single('image'), async (req, res) => {
+router.put('/:id', protect, blogEditorOnly, upload.single('image'), async (req, res) => {
   try {
     const blog = await Blog.findById(req.params.id);
     if (!blog) return res.status(404).json({ success: false, message: 'Blog not found' });
@@ -179,7 +179,7 @@ router.put('/:id', protect, adminOnly, upload.single('image'), async (req, res) 
 });
 
 // DELETE /api/blogs/:id  – admin: delete blog
-router.delete('/:id', protect, adminOnly, async (req, res) => {
+router.delete('/:id', protect, blogEditorOnly, async (req, res) => {
   try {
     const blog = await Blog.findById(req.params.id);
     if (!blog) return res.status(404).json({ success: false, message: 'Blog not found' });

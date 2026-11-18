@@ -105,3 +105,15 @@ export const adminOnly = async (req, res, next) => {
   }
 };
 
+
+// Middleware for blog management: admins and SEO editors
+// Use AFTER `protect`
+export const blogEditorOnly = (req, res, next) => {
+  if (!req.user || !['admin', 'seo'].includes(req.user.role)) {
+    return res.status(403).json({
+      success: false,
+      message: 'Blog editor access required'
+    });
+  }
+  next();
+};
