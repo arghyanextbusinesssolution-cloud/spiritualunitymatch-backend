@@ -156,8 +156,8 @@ export const likeUser = async (req, res) => {
         // Sync limits with current plan
         engagement.syncLimitsWithPlan(subscription.plan);
 
-        // Enforce total swipe limits for non-premium plans
-        if (subscription.plan !== 'premium') {
+        // Enforce swipe limits for the free (basic) plan only — Standard & Premium are unlimited
+        if (subscription.plan === 'basic') {
             if (engagement.dailySwipesUsed >= engagement.dailySwipesLimit) {
                 return res.status(403).json({
                     success: false,
@@ -335,8 +335,8 @@ export const rejectUser = async (req, res) => {
         // Sync limits with current plan
         engagement.syncLimitsWithPlan(subscription.plan);
 
-        // Enforce total swipe limits for non-premium plans
-        if (subscription.plan !== 'premium') {
+        // Enforce swipe limits for the free (basic) plan only — Standard & Premium are unlimited
+        if (subscription.plan === 'basic') {
             if (engagement.dailySwipesUsed >= engagement.dailySwipesLimit) {
                 return res.status(403).json({
                     success: false,

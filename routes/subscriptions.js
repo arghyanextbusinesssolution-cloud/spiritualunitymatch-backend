@@ -15,20 +15,43 @@ const stripe = new Stripe(process.env.STRIPE_SECRET_KEY);
 
 
 // Plan configuration
-// These price IDs need to be set up in Stripe Dashboard
+// Basic is FREE (no Stripe). Only Standard ($19/mo) and Premium ($39/mo) are paid.
+// Put the recurring Price IDs (price_...) from the Stripe Dashboard in .env
 const PLAN_PRICES = {
-  basic: {
-    monthly: process.env.STRIPE_PRICE_BASIC_MONTHLY || 'price_basic_monthly',
-    yearly: process.env.STRIPE_PRICE_BASIC_YEARLY || 'price_basic_yearly'
-  },
   standard: {
-    monthly: process.env.STRIPE_PRICE_STANDARD_MONTHLY || 'price_standard_monthly',
-    yearly: process.env.STRIPE_PRICE_STANDARD_YEARLY || 'price_standard_yearly'
+    monthly: process.env.STRIPE_PRICE_STANDARD_MONTHLY,
+    yearly: process.env.STRIPE_PRICE_STANDARD_YEARLY // optional
   },
   premium: {
-    monthly: process.env.STRIPE_PRICE_PREMIUM_MONTHLY || 'price_premium_monthly',
-    yearly: process.env.STRIPE_PRICE_PREMIUM_YEARLY || 'price_premium_yearly'
+    monthly: process.env.STRIPE_PRICE_PREMIUM_MONTHLY,
+    yearly: process.env.STRIPE_PRICE_PREMIUM_YEARLY // optional
   }
+};
+
+// Reverse lookup: Stripe price ID -> { plan, billingCycle }
+const planFromPriceId = (priceId) => {
+  for (const [plan, cycles] of Object.entries(PLAN_PRICES)) {
+    for (const [billingCycle, id] of Object.entries(cycles)) {
+      if (id && id === priceId) return { plan, billingCycle };
+    }
+  }
+  return null;
+};
+
+// Stripe API versions differ in where these fields live; read them defensively
+const getPeriod = (stripeSub) => {
+  const item = stripeSub.items?.data?.[0];
+  const start = stripeSub.current_period_start ?? item?.current_period_start;
+  const end = stripeSub.current_period_end ?? item?.current_period_end;
+  return {
+    startDate: start ? new Date(start * 1000) : undefined,
+    endDate: end ? new Date(end * 1000) : undefined
+  };
+};
+
+const getInvoiceSubscriptionId = (invoice) => {
+  const sub = invoice.subscription ?? invoice.parent?.subscription_details?.subscription;
+  return typeof sub === 'string' ? sub : sub?.id;
 };
 
 // @route   POST /api/subscriptions/create-checkout
@@ -39,7 +62,14 @@ router.post('/create-checkout', protect, async (req, res) => {
     const plan = req.body.plan || req.body.planId;
     const billingCycle = req.body.billingCycle;
 
-    if (!plan || !['basic', 'standard', 'premium'].includes(plan)) {
+    if (plan === 'basic') {
+      return res.status(400).json({
+        success: false,
+        message: 'The Basic plan is free - no payment needed.'
+      });
+    }
+
+    if (!plan || !['standard', 'premium'].includes(plan)) {
       return res.status(400).json({
         success: false,
         message: 'Invalid plan selected'
@@ -55,24 +85,67 @@ router.post('/create-checkout', protect, async (req, res) => {
 
     const priceId = PLAN_PRICES[plan][billingCycle];
 
-    if (!priceId || priceId.startsWith('price_')) {
-        // If it's still the placeholder or missing, and we're not in a test mode that allows it
-        if (priceId === 'price_basic_monthly' || priceId === 'price_basic_yearly' || 
-            priceId === 'price_standard_yearly' || priceId === 'price_premium_yearly') {
-            return res.status(400).json({
-                success: false,
-                message: `This plan option (${plan} ${billingCycle}) is not yet configured in Stripe.`
-            });
+    if (!priceId) {
+      return res.status(400).json({
+        success: false,
+        message: `This plan option (${plan} ${billingCycle}) is not yet configured in Stripe.`
+      });
+    }
+
+    // Upgrade / downgrade: if the user already pays for a plan, switch the price on the
+    // EXISTING Stripe subscription instead of creating a second one (avoids double billing).
+    const existing = await Subscription.findOne({ user: req.user._id, status: 'active' });
+    if (existing?.stripeSubscriptionId) {
+      let stripeSub = null;
+      try {
+        stripeSub = await stripe.subscriptions.retrieve(existing.stripeSubscriptionId);
+      } catch (err) {
+        if (err.code !== 'resource_missing') throw err; // saved under another Stripe account -> start fresh checkout
+      }
+      if (stripeSub && ['active', 'trialing', 'past_due'].includes(stripeSub.status)) {
+        if (stripeSub.items.data[0].price.id === priceId) {
+          return res.status(400).json({ success: false, message: `You are already on the ${plan} plan.` });
         }
+
+        const updated = await stripe.subscriptions.update(stripeSub.id, {
+          items: [{ id: stripeSub.items.data[0].id, price: priceId }],
+          proration_behavior: 'always_invoice', // charge the price difference now
+          cancel_at_period_end: false,
+          metadata: { userId: req.user._id.toString(), plan, billingCycle }
+        });
+
+        existing.plan = plan;
+        existing.billingCycle = billingCycle;
+        existing.stripePriceId = priceId;
+        existing.cancelAtPeriodEnd = false;
+        existing.canceledAt = null;
+        Object.assign(existing, getPeriod(updated));
+        existing.updateFeatures();
+        await existing.save();
+        await User.findByIdAndUpdate(req.user._id, { role: plan });
+
+        const successUrl = `${process.env.FRONTEND_URL || 'http://localhost:3000'}/subscription/success`;
+        return res.json({ success: true, upgraded: true, url: successUrl, redirectUrl: successUrl });
+      }
     }
 
     // Get or create Stripe customer
     let customerId;
     const user = await User.findById(req.user._id);
     
+    // Re-use the saved customer only if it exists in the CURRENT Stripe account
+    // (IDs saved under old test keys / another account won't exist after switching keys)
     if (user.stripeCustomerId) {
-      customerId = user.stripeCustomerId;
-    } else {
+      try {
+        const existingCustomer = await stripe.customers.retrieve(user.stripeCustomerId);
+        if (!existingCustomer.deleted) customerId = existingCustomer.id;
+      } catch (err) {
+        if (err.code !== 'resource_missing') throw err;
+        console.log(`ℹ️ [STRIPE] Saved customer ${user.stripeCustomerId} not found in this account, creating a new one`);
+      }
+    }
+
+    if (!customerId) {
       // Create new Stripe customer
       const customer = await stripe.customers.create({
         email: req.user.email,
@@ -293,8 +366,7 @@ async function handleCheckoutCompleted(session) {
         stripeSubscriptionId: subscription.id,
         stripePriceId: subscription.items.data[0].price.id,
         billingCycle,
-        startDate: new Date(subscription.current_period_start * 1000),
-        endDate: new Date(subscription.current_period_end * 1000)
+        ...getPeriod(subscription)
       });
     } else {
       console.log('🔄 [WEBHOOK] Updating existing subscription record');
@@ -304,8 +376,7 @@ async function handleCheckoutCompleted(session) {
       userSubscription.stripeSubscriptionId = subscription.id;
       userSubscription.stripePriceId = subscription.items.data[0].price.id;
       userSubscription.billingCycle = billingCycle;
-      userSubscription.startDate = new Date(subscription.current_period_start * 1000);
-      userSubscription.endDate = new Date(subscription.current_period_end * 1000);
+      Object.assign(userSubscription, getPeriod(subscription));
       userSubscription.canceledAt = null;
       userSubscription.cancelAtPeriodEnd = false;
     }
@@ -356,18 +427,34 @@ async function handleSubscriptionUpdated(stripeSubscription) {
     stripeSubscriptionId: stripeSubscription.id
   });
 
-  if (subscription) {
-    subscription.status = stripeSubscription.status === 'active' ? 'active' : 'past_due';
-    subscription.startDate = new Date(stripeSubscription.current_period_start * 1000);
-    subscription.endDate = new Date(stripeSubscription.current_period_end * 1000);
-    subscription.cancelAtPeriodEnd = stripeSubscription.cancel_at_period_end;
+  if (!subscription) return;
 
-    if (stripeSubscription.cancel_at_period_end) {
-      subscription.canceledAt = new Date();
-    }
+  const statusMap = { active: 'active', trialing: 'active', past_due: 'past_due', unpaid: 'past_due', canceled: 'canceled', incomplete_expired: 'expired' };
+  subscription.status = statusMap[stripeSubscription.status] || 'past_due';
 
-    await subscription.save();
+  const period = getPeriod(stripeSubscription);
+  if (period.startDate) subscription.startDate = period.startDate;
+  if (period.endDate) subscription.endDate = period.endDate;
+
+  subscription.cancelAtPeriodEnd = stripeSubscription.cancel_at_period_end;
+  if (stripeSubscription.cancel_at_period_end && !subscription.canceledAt) {
+    subscription.canceledAt = new Date();
   }
+
+  // Keep plan in sync if the price changed (e.g. upgrade/downgrade)
+  const priceId = stripeSubscription.items?.data?.[0]?.price?.id;
+  const mapped = priceId && planFromPriceId(priceId);
+  if (mapped) {
+    subscription.plan = mapped.plan;
+    subscription.billingCycle = mapped.billingCycle;
+    subscription.stripePriceId = priceId;
+    subscription.updateFeatures();
+  }
+
+  await subscription.save();
+  await User.findByIdAndUpdate(subscription.user, {
+    role: subscription.status === 'active' ? subscription.plan : 'basic'
+  });
 }
 
 // Handle subscription deletion/cancellation
@@ -398,9 +485,10 @@ async function handleSubscriptionDeleted(stripeSubscription) {
 
 // Handle successful payment
 async function handlePaymentSucceeded(invoice) {
-  const subscription = await Subscription.findOne({
-    stripeSubscriptionId: invoice.subscription
-  });
+  const stripeSubscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!stripeSubscriptionId) return; // not a subscription invoice
+
+  const subscription = await Subscription.findOne({ stripeSubscriptionId });
 
   if (subscription) {
     await Payment.create({
@@ -418,9 +506,10 @@ async function handlePaymentSucceeded(invoice) {
 
 // Handle failed payment
 async function handlePaymentFailed(invoice) {
-  const subscription = await Subscription.findOne({
-    stripeSubscriptionId: invoice.subscription
-  });
+  const stripeSubscriptionId = getInvoiceSubscriptionId(invoice);
+  if (!stripeSubscriptionId) return; // not a subscription invoice
+
+  const subscription = await Subscription.findOne({ stripeSubscriptionId });
 
   if (subscription) {
     subscription.status = 'past_due';
@@ -539,43 +628,42 @@ router.get('/details', protect, async (req, res) => {
 
     const planDetails = {
       basic: {
-        name: 'Starter Spirit',
-        description: 'Begin your spiritual journey',
+        name: 'Basic',
+        description: 'Explore the community and begin your journey.',
         features: [
-          'Basic browsing (10 profiles/day)',
-          'Create profile',
-          'View matches',
-          'Community access'
+          'Create a detailed spiritual profile',
+          'View up to 10 profiles per day',
+          'Send limited initial likes',
+          'Access basic filter options',
+          'Participate in open community polls'
         ],
-        monthlyPrice: 4.99,
-        yearlyPrice: 49.99
+        monthlyPrice: 0,
+        yearlyPrice: 0
       },
       standard: {
-        name: 'Dating Basic',
-        description: 'Deepen your connections',
+        name: 'Standard',
+        description: 'Our most popular plan for active soul seekers.',
         features: [
-          'Unlimited browsing',
-          'Full messaging',
-          'See who likes you',
-          'Basic filters',
-          'Community events',
-          'Soul check-ins'
+          'Unlimited profile browsing & swipes',
+          'Full unlimited messaging',
+          'See who liked your profile',
+          'Advanced spiritual tag search',
+          'Improved profile visibility in feed',
+          'Access to conscious event listings'
         ],
         monthlyPrice: 19.00,
         yearlyPrice: 190.00
       },
       premium: {
-        name: 'Dating Premium',
-        description: 'Ultimate spiritual experience',
+        name: 'Premium',
+        description: 'The ultimate divine connection experience.',
         features: [
           'Everything in Standard',
-          'Advanced filters',
-          'Profile boost',
-          'Priority placement',
-          'See profile views',
-          'Match insights',
-          'VIP support',
-          'Spiritual coaching'
+          'Priority search placement across all feeds',
+          'Comprehensive Soul Compatibility Reports',
+          'Unlimited rewinds & super likes',
+          'Personalized matchmaking recommendations',
+          'VIP customer & spiritual support 24/7'
         ],
         monthlyPrice: 39.00,
         yearlyPrice: 390.00

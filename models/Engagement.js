@@ -84,14 +84,11 @@ const engagementSchema = new mongoose.Schema({
 
 // Sync limits with plan
 engagementSchema.methods.syncLimitsWithPlan = function(plan) {
-  if (plan === 'premium') {
+  if (plan === 'premium' || plan === 'standard') {
+    // Standard & Premium: unlimited browsing, swipes and messaging
     this.dailyLikesLimit = 99999;
     this.dailySwipesLimit = 99999; // Unlimited
     this.dailyMessagesLimit = 0; // Unlimited
-  } else if (plan === 'standard') {
-    this.dailyLikesLimit = 30;
-    this.dailySwipesLimit = 30; // 30 swipes
-    this.dailyMessagesLimit = 0; // Unlimited messaging for standard
   } else {
     // Basic / Default / Free
     this.dailyLikesLimit = 10;

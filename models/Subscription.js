@@ -96,6 +96,8 @@ subscriptionSchema.methods.updateFeatures = function() {
     this.features.unlimitedBrowsing = true;
     this.features.messaging = true;
     this.features.seeLikes = true;
+    this.features.advancedFilters = true; // Advanced spiritual tag search
+    this.features.profileBoost = true;    // Improved profile visibility in feed
   }
 
   // Premium plan features
